@@ -1,0 +1,3 @@
+yfinance
+gspread>=6
+pandas
