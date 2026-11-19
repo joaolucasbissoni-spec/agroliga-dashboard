@@ -10,6 +10,10 @@ on:
         description: "Recarregar 1 ano de histórico (use na primeira vez)"
         type: boolean
         default: false
+      rebuild:
+        description: "APAGAR e recriar a aba Historico (use após mudar nomes de ativos)"
+        type: boolean
+        default: false
 
 jobs:
   atualizar:
@@ -27,4 +31,5 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           BACKFILL: ${{ inputs.backfill && '1' || '' }}
+          REBUILD: ${{ inputs.rebuild && '1' || '' }}
         run: python atualizar.py

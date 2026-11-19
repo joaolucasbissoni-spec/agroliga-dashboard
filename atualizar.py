@@ -20,15 +20,9 @@ import yfinance as yf
 
 TZ = ZoneInfo("America/Sao_Paulo")
 
-# Tickers do Yahoo Finance. Contratos específicos vencem: revise a cada trimestre.
-# kg_por_unidade: peso de 1 bushel, para converter ¢/bu em R$/saca de 60 kg.
-ATIVOS = [
-    # (nome, ticker, unidade original, kg por bushel p/ conversão ou None)
-    ("Soja CBOT Nov/26", "ZSX26.CBT", "¢/bushel", 27.2155),
-    ("Soja CBOT Mar/27", "ZSH27.CBT", "¢/bushel", 27.2155),
-    ("Milho CBOT Dez/26", "ZCZ26.CBT", "¢/bushel", 25.4012),
-    ("Milho CBOT Jul/27", "ZCN27.CBT", "¢/bushel", 25.4012),
-    ("Trigo CBOT Dez/26", "ZWZ26.CBT", "¢/bushel", 27.2155),
+# Tickers do Yahoo Finance. Os abaixo são contínuos (o Yahoo faz a rolagem) e não vencem.
+# (nome, ticker, unidade original, kg por bushel p/ conversão ou None)
+ATIVOS_FIXOS = [
     ("Açúcar #11 (ICE)", "SB=F", "¢/libra-peso", None),
     ("Café Arábica (ICE)", "KC=F", "¢/libra-peso", None),
     ("Algodão #2 (ICE)", "CT=F", "¢/libra-peso", None),
@@ -36,6 +30,18 @@ ATIVOS = [
     ("Boi Gordo EUA (CME)", "LE=F", "¢/libra-peso", None),
 ]
 CAMBIO = ("USD/BRL", "BRL=X", "R$/US$", None)
+
+# Grãos têm contratos mensais que vencem. O script descobre sozinho os vencimentos
+# vigentes, então os nomes são estáveis ("1º venc." é sempre o mais próximo) e o painel
+# não quebra a cada vencimento. O contrato real aparece na coluna `ticker`.
+# (nome, raiz no Yahoo, meses de vencimento, quantos vencimentos, kg por bushel)
+GRAOS = [
+    ("Soja CBOT", "ZS", "FHKNQUX", 2, 27.2155),
+    ("Milho CBOT", "ZC", "HKNUZ", 2, 25.4012),
+    ("Trigo CBOT", "ZW", "HKNUZ", 1, 27.2155),
+]
+CODIGOS_MES = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+               "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
 
 COLUNAS_HIST = ["data", "ativo", "ticker", "preco", "unidade"]
 COLUNAS_ATUAL = ["ativo", "ticker", "preco", "unidade", "variacao_pct",
@@ -52,6 +58,42 @@ def buscar_serie(ticker: str, periodo: str) -> pd.Series:
     return hist
 
 
+def candidatos(raiz: str, meses: str, hoje):
+    """Tickers dos contratos do mês atual em diante, em ordem de vencimento."""
+    for ano in range(hoje.year, hoje.year + 3):
+        for cod in sorted(meses, key=CODIGOS_MES.get):
+            if (ano, CODIGOS_MES[cod]) >= (hoje.year, hoje.month):
+                yield f"{raiz}{cod}{ano % 100:02d}.CBT"
+
+
+def descobrir_contratos(raiz: str, meses: str, n: int, hoje) -> list:
+    """Os n próximos contratos que ainda negociam (último pregão há <= 5 dias)."""
+    achados = []
+    for ticker in candidatos(raiz, meses, hoje):
+        try:
+            s = buscar_serie(ticker, "10d")
+        except Exception:  # noqa: BLE001
+            continue  # contrato vencido, ainda não listado ou sem dados
+        if (pd.Timestamp(hoje) - s.index[-1]).days > 5:
+            continue
+        achados.append(ticker)
+        if len(achados) == n:
+            break
+    return achados
+
+
+def montar_ativos(hoje):
+    """Lista final de ativos (com rolagem automática dos grãos) e eventuais falhas."""
+    ativos, falhas = [], []
+    for nome, raiz, meses, n, kg in GRAOS:
+        tickers = descobrir_contratos(raiz, meses, n, hoje)
+        if len(tickers) < n:
+            falhas.append(f"{nome}: achei {len(tickers)} de {n} contratos vigentes")
+        for i, ticker in enumerate(tickers, 1):
+            ativos.append((f"{nome} ({i}º venc.)", ticker, "¢/bushel", kg))
+    return ativos + ATIVOS_FIXOS, falhas
+
+
 def equiv_reais_saca(preco_centavos_bu, kg_bu, usd_brl):
     """Paridade CBOT: ¢/bu -> R$/saca 60 kg (sem prêmio, frete ou impostos)."""
     if not kg_bu or not usd_brl:
@@ -61,9 +103,10 @@ def equiv_reais_saca(preco_centavos_bu, kg_bu, usd_brl):
 
 def coletar(periodo_hist: str):
     """Retorna (historico, atual, falhas)."""
-    historico, atual, falhas = [], [], []
+    historico, atual = [], []
+    ativos, falhas = montar_ativos(datetime.now(TZ).date())
     series = {}
-    for nome, ticker, unidade, kg in [CAMBIO] + ATIVOS:
+    for nome, ticker, unidade, kg in [CAMBIO] + ativos:
         try:
             series[ticker] = buscar_serie(ticker, periodo_hist)
         except Exception as e:  # noqa: BLE001
@@ -73,7 +116,7 @@ def coletar(periodo_hist: str):
     cambio_atual = float(cambio.iloc[-1]) if cambio is not None else None
     agora = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
 
-    for nome, ticker, unidade, kg in [CAMBIO] + ATIVOS:
+    for nome, ticker, unidade, kg in [CAMBIO] + ativos:
         s = series.get(ticker)
         if s is None:
             continue
@@ -122,6 +165,9 @@ def gravar_sheets(historico, atual):
 
     # Aba "Historico": só acrescenta pregões novos (chave = data + ticker).
     ws = aba(sh, "Historico", COLUNAS_HIST)
+    if os.environ.get("REBUILD"):  # recomeça o histórico (ex.: após mudar nomes de ativos)
+        ws.clear()
+        ws.update(range_name="A1", values=[COLUNAS_HIST])
     existentes = {(r[0], r[2]) for r in ws.get_all_values()[1:] if len(r) > 2}
     novas = [r for r in historico if (r[0], r[2]) not in existentes]
     if novas:
@@ -138,8 +184,11 @@ def main():
     args = ap.parse_args()
 
     # Primeira execução traz 1 ano de histórico; depois bastam alguns dias.
-    periodo = "1y" if args.dry_run or os.environ.get("BACKFILL") else "10d"
-    historico, atual, falhas = coletar(periodo)
+    carga_completa = args.dry_run or os.environ.get("BACKFILL") or os.environ.get("REBUILD")
+    historico, atual, falhas = coletar("1y" if carga_completa else "10d")
+
+    if os.environ.get("REBUILD") and falhas:  # não apaga o histórico com dados incompletos
+        sys.exit("REBUILD cancelado, houve falhas na coleta:\n- " + "\n- ".join(falhas))
 
     if args.dry_run:
         os.makedirs("saida", exist_ok=True)

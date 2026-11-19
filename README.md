@@ -37,7 +37,8 @@ O código original tinha valores fixos inventados para o físico, então foram r
 Por ora, preencham `Fisico_Manual` com data, praça, unidade, preço e fonte (ex.: semanalmente, citando CEPEA/ESALQ). Automatizar exige conferir os termos de uso do CEPEA; pode ser a próxima etapa.
 
 ## Manutenção
-- **Contratos vencem**: `ZSX26.CBT` (soja nov/26) deixa de existir após o vencimento. Troque os tickers em `ATIVOS` a cada trimestre (ou use `ZS=F`, `ZC=F`, `ZW=F`, que rolam sozinhos).
+- **Contratos de grãos rolam sozinhos**: o script escolhe a cada execução os contratos vigentes de soja, milho e trigo. Os nomes são fixos ("Soja CBOT (1º venc.)", "(2º venc.)"); o contrato real aparece na coluna `ticker` da aba `Atual` (ex.: `ZSF27.CBT` = soja jan/27). Para mudar quais grãos e quantos vencimentos, edite `GRAOS` em `atualizar.py`.
+- **Recriar o histórico**: se mudar nomes de ativos, rode o workflow manualmente marcando **rebuild**. Isso apaga e recarrega 1 ano da aba `Historico` (os dados vêm do Yahoo, então nada se perde).
 - Se o job falhar, o GitHub manda e-mail ao dono do repositório.
 - Em repositórios públicos, o GitHub pausa workflows agendados após ~60 dias sem atividade no repositório. Se acontecer, reative na aba Actions.
 - Teste local: `pip install -r requirements.txt && python atualizar.py --dry-run` (gera CSVs em `saida/`).
